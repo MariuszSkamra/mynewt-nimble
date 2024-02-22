@@ -1,0 +1,71 @@
+#
+# Licensed to the Apache Software Foundation (ASF) under one
+# or more contributor license agreements.  See the NOTICE file
+# distributed with this work for additional information
+# regarding copyright ownership.  The ASF licenses this file
+# to you under the Apache License, Version 2.0 (the
+# "License"); you may not use this file except in compliance
+# with the License.  You may obtain a copy of the License at
+#
+#  http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing,
+# software distributed under the License is distributed on an
+# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+# KIND, either express or implied.  See the License for the
+# specific language governing permissions and limitations
+# under the License.
+#
+
+# Uncomment to run without bootloader
+#syscfg.defs:
+#    BOOT_LOADER:
+#        description: 'Build everything as bootloader'
+#        value: 1
+
+syscfg.vals:
+    BLE_TRANSPORT_HS: ipc
+    BLE_PHY_DBG_TIME_TXRXEN_READY_PIN: 1
+
+    MSYS_1_BLOCK_COUNT: 12
+    BLE_LL_CFG_FEAT_DATA_LEN_EXT: 1
+    BLE_PHY_2M: 1
+    BLE_PHY_CODED: 1
+    BLE_LL_CFG_FEAT_LL_PRIVACY: 1
+    BLE_LL_CFG_FEAT_CTRL_TO_HOST_FLOW_CONTROL: 1
+    BLE_LL_CONN_INIT_MAX_TX_BYTES: 251
+    BLE_LL_CONN_INIT_SLOTS: 4
+    BLE_LL_DTM: 1
+    BLE_LL_DTM_EXTENSIONS: 1
+    BLE_LL_HCI_VS_EVENT_ON_ASSERT: 1
+    BLE_MAX_CONNECTIONS: 1
+    BLE_EXT_ADV: 1
+    BLE_EXT_ADV_MAX_SIZE: 1650
+    BLE_MAX_PERIODIC_SYNCS: 1
+    BLE_MULTI_ADV_INSTANCES: 1
+    BLE_PERIODIC_ADV: 1
+    BLE_PERIODIC_ADV_SYNC_TRANSFER: 1
+    BLE_VERSION: 54
+    BLE_LL_PUBLIC_DEV_ADDR: 0xbabb1e000001
+
+    MCU_LFCLK_SOURCE: LFSYNTH
+    MSYS_1_BLOCK_SIZE: 308
+    OS_CRASH_FILE_LINE: 1
+    BLE_TRANSPORT_ACL_COUNT: 6
+    BLE_TRANSPORT_ACL_SIZE: 255
+    BLE_TRANSPORT_EVT_COUNT: 4
+    BLE_TRANSPORT_EVT_DISCARDABLE_COUNT: 64
+    BLE_TRANSPORT_ISO_COUNT: 32
+    BLE_TRANSPORT_ISO_SIZE: 256
+
+    BLE_LL_ISO: 1
+    BLE_LL_ISO_BROADCASTER: 1
+    BLE_LL_ISO_BROADCAST_RECEIVER: 1
+    BLE_LL_PERIODIC_ADV_SYNC_BIGINFO_REPORTS: 1
+
+    NRF5340_EMBED_NET_CORE: 1
+
+    BLE_LL_DEBUG_GPIO_SCHED_RUN: 28
+    BLE_PHY_DBG_TIME_TXRXEN_READY_PIN: 4
+    BLE_PHY_DBG_TIME_ADDRESS_END_PIN: 5
+    BLE_PHY_DBG_TIME_WFR_PIN: 32

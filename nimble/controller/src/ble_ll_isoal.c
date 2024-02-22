@@ -17,10 +17,13 @@
  * under the License.
  */
 
+#include <controller/ble_ll.h>
+#include <controller/ble_ll_iso.h>
+#include <controller/ble_ll_isoal.h>
+#include <controller/ble_ll_tmr.h>
+#include <controller/ble_ll_utils.h>
 #include <stdint.h>
 #include <syscfg/syscfg.h>
-#include <controller/ble_ll.h>
-#include <controller/ble_ll_isoal.h>
 
 #ifndef min
 #define min(a, b) ((a) < (b) ? (a) : (b))
@@ -29,31 +32,36 @@
 #if MYNEWT_VAL(BLE_LL_ISO)
 
 void
-ble_ll_isoal_mux_init(struct ble_ll_isoal_mux *mux, uint8_t max_pdu,
-                      uint32_t iso_interval_us, uint32_t sdu_interval_us,
-                      uint8_t bn, uint8_t pte, bool framed, uint8_t framing_mode)
+ble_ll_isoal_mux_init(struct ble_ll_isoal_mux *mux,
+                      const struct ble_ll_isoal_mux_init_param *param)
 {
     memset(mux, 0, sizeof(*mux));
 
-    mux->max_pdu = max_pdu;
-    /* Core 5.3, Vol 6, Part G, 2.1 */
-    mux->sdu_per_interval = iso_interval_us / sdu_interval_us;
+    mux->iso_interval_us = param->iso_interval_us;
+    mux->sdu_interval_us = param->sdu_interval_us;
 
-    if (framed) {
+    mux->max_sdu = param->max_sdu;
+    mux->max_pdu = param->max_pdu;
+    /* Core 5.3, Vol 6, Part G, 2.1 */
+    mux->sdu_per_interval = param->iso_interval_us / param->sdu_interval_us;
+
+    if (param->framed) {
         /* TODO */
     } else {
-        mux->pdu_per_sdu = bn / mux->sdu_per_interval;
+        mux->pdu_per_sdu = param->bn / mux->sdu_per_interval;
     }
 
-    mux->sdu_per_event = (1 + pte) * mux->sdu_per_interval;
+    mux->sdu_per_event = (1 + param->pte) * mux->sdu_per_interval;
 
-    mux->bn = bn;
+    mux->bn = param->bn;
 
     STAILQ_INIT(&mux->sdu_q);
     mux->sdu_q_len = 0;
 
-    mux->framed = framed;
-    mux->framing_mode = framing_mode;
+    STAILQ_INIT(&mux->pdu_q);
+
+    mux->framed = param->framed;
+    mux->framing_mode = param->framing_mode;
 }
 
 void
@@ -124,6 +132,7 @@ ble_ll_isoal_mux_event_start(struct ble_ll_isoal_mux *mux, uint32_t timestamp)
         mux->sdu_in_event = min(mux->sdu_q_len, mux->sdu_per_event);
     }
 #endif
+
     mux->event_tx_timestamp = timestamp;
 
     return mux->sdu_in_event;
@@ -269,6 +278,345 @@ ble_ll_isoal_mux_framed_event_done(struct ble_ll_isoal_mux *mux)
     return pkt_freed;
 }
 
+static void
+ble_ll_isoal_mux_sdu_emit(struct ble_ll_isoal_mux *mux, struct os_mbuf *sdu,
+                          uint32_t time_offset, bool error)
+{
+    /* Core 6.0 | Vol 6, Part G, 4
+     * SDUs with a length exceeding Max_SDU. In this case, the length of the SDU reported
+     * to the upper layer shall not exceed the Max_SDU length. The SDU shall be truncated
+     * to Max_SDU octets.
+     */
+    if (os_mbuf_len(sdu) > mux->max_sdu) {
+        os_mbuf_adj(sdu, -(os_mbuf_len(sdu) - mux->max_sdu));
+        error = true;
+    }
+
+    if (mux->cb) {
+        mux->cb->sdu_send(mux, sdu, mux->event_tx_timestamp + time_offset,
+                          ++mux->sdu_counter, !error);
+    }
+
+    os_mbuf_free_chain(sdu);
+}
+
+static uint8_t
+pdu_idx_get(struct ble_mbuf_hdr *hdr)
+{
+    return POINTER_TO_UINT(hdr->rxinfo.user_data);
+}
+
+static void
+pdu_idx_set(struct ble_mbuf_hdr *hdr, uint8_t pdu_idx)
+{
+    hdr->rxinfo.user_data = UINT_TO_POINTER(pdu_idx);
+}
+
+static void
+ble_ll_isoal_mux_reassemble(struct ble_ll_isoal_mux *mux)
+{
+    struct os_mbuf_pkthdr *entry;
+    struct ble_mbuf_hdr *hdr;
+    struct os_mbuf *om;
+    struct os_mbuf *seg;
+    struct os_mbuf *sdu;
+    uint32_t time_offset;
+    uint16_t seghdr;
+    uint8_t hdr_byte;
+    uint8_t llid;
+    uint8_t len;
+    bool start;
+    bool cmplt;
+    bool error;
+
+    sdu = mux->frag;
+    error = false;
+    cmplt = false;
+    time_offset = 0;
+
+    entry = STAILQ_FIRST(&mux->pdu_q);
+    for (uint8_t pdu_idx = 0; pdu_idx < mux->bn; pdu_idx++) {
+        if (entry == NULL) {
+            error = true;
+            /* FIXME */
+            break;
+        }
+
+        om = OS_MBUF_PKTHDR_TO_MBUF(entry);
+        hdr = BLE_MBUF_HDR_PTR(om);
+
+        if (pdu_idx_get(hdr) != pdu_idx) {
+            error = true;
+            continue;
+        }
+
+        /* Remove the PDU from queue */
+        STAILQ_REMOVE_HEAD(&mux->pdu_q, omp_next);
+
+        hdr_byte = om->om_data[0];
+        BLE_LL_ASSERT(BLE_LL_BIS_LLID_IS_DATA(hdr_byte));
+
+        /* Strip the header from the buffer to process only the payload data */
+        os_mbuf_adj(om, BLE_LL_PDU_HDR_LEN);
+
+        llid = hdr_byte & BLE_LL_BIS_PDU_HDR_LLID_MASK;
+
+        if (llid == BLE_LL_BIS_LLID_DATA_PDU_FRAMED) {
+            while (om != NULL && os_mbuf_len(om) > 0) {
+                om = os_mbuf_pullup(om, sizeof(seghdr));
+                if (om == NULL) {
+                    error = true;
+                    break;
+                }
+
+                seghdr = get_le16(om->om_data);
+                start = !BLE_LL_ISOAL_SEGHDR_SC(seghdr);
+                cmplt = BLE_LL_ISOAL_SEGHDR_CMPLT(seghdr);
+                len = BLE_LL_ISOAL_SEGHDR_LEN(seghdr);
+                os_mbuf_adj(om, sizeof(seghdr));
+
+                if (start) {
+                    /* SDU start */
+                    om = os_mbuf_pullup(om, 3);
+                    if (om == NULL) {
+                        error = true;
+                        break;
+                    }
+
+                    time_offset = get_le24(om->om_data);
+                    os_mbuf_adj(om, 3);
+                    len -= 3;
+
+                    if (sdu) {
+                        /* Emit the pending SDU with errors */
+                        ble_ll_isoal_mux_sdu_emit(mux, sdu, time_offset, true);
+                        sdu = NULL;
+                    }
+                } else if (sdu == NULL) {
+                    /* SDU continuation. Drop the segment, since we do not have a start segment */
+                    os_mbuf_adj(om, len);
+                    error = true;
+                    continue;
+                }
+
+                seg = om;
+
+                if (len == os_mbuf_len(om)) {
+                    /* No more segments in the 'om' */
+                    om = NULL;
+                } else if (os_mbuf_len(seg) > len) {
+                    /* Duplicate and adjust buffer */
+                    om = os_mbuf_dup(seg);
+
+                    /* Trim the 'om' head so that 'om->om_data' will point to the data behind SDU Segment */
+                    os_mbuf_adj(om, len);
+                    len = os_mbuf_len(om);
+
+                    /* Trim the 'frag' tail so that the 'frag' will contain SDU Segment only */
+                    os_mbuf_adj(seg, -len);
+                } else {
+                    /* No more segments in the 'om' */
+                    om = NULL;
+
+                    /* Segment length exceeds the length of the buffer */
+                    error = true;
+                }
+
+                if (start) {
+                    BLE_LL_ASSERT(sdu == NULL);
+                    sdu = seg;
+                } else {
+                    BLE_LL_ASSERT(sdu != NULL);
+                    sdu = os_mbuf_pack_chains(sdu, seg);
+                }
+
+                if (cmplt) {
+                    ble_ll_isoal_mux_sdu_emit(mux, sdu, time_offset, error);
+                    sdu = NULL;
+                    cmplt = false;
+                }
+            }
+        } else {
+            /* Invalid LLID, free and move on */
+            error = true;
+        }
+
+        if (om != NULL) {
+            os_mbuf_free_chain(om);
+        }
+
+        entry = STAILQ_FIRST(&mux->pdu_q);
+    }
+
+    if (sdu != NULL && error) {
+        /* Emit the pending SDU with errors */
+        ble_ll_isoal_mux_sdu_emit(mux, sdu, time_offset, true);
+        sdu = NULL;
+    }
+
+    /* Save partially processed SDU */
+    mux->frag = sdu;
+}
+
+static void
+ble_ll_isoal_mux_recombine(struct ble_ll_isoal_mux *mux)
+{
+    struct os_mbuf_pkthdr *entry;
+    struct ble_mbuf_hdr *hdr;
+    struct os_mbuf *om;
+    struct os_mbuf *sdu;
+    uint8_t hdr_byte;
+    uint8_t llid;
+    bool cmplt;
+    bool error;
+
+    entry = STAILQ_FIRST(&mux->pdu_q);
+    for (uint8_t bn = 0; bn < mux->bn; bn += mux->pdu_per_sdu) {
+        sdu = NULL;
+        error = false;
+        cmplt = false;
+
+        for (uint8_t pdu_idx = bn; pdu_idx < bn + mux->pdu_per_sdu; pdu_idx++) {
+            if (entry == NULL) {
+                error = true;
+                break;
+            }
+
+            om = OS_MBUF_PKTHDR_TO_MBUF(entry);
+            hdr = BLE_MBUF_HDR_PTR(om);
+
+            if (pdu_idx_get(hdr) != pdu_idx) {
+                error = true;
+                continue;
+            }
+
+            /* Remove the PDU from queue */
+            STAILQ_REMOVE_HEAD(&mux->pdu_q, omp_next);
+
+            hdr_byte = om->om_data[0];
+            BLE_LL_ASSERT(BLE_LL_BIS_LLID_IS_DATA(hdr_byte));
+
+            /* Strip the header from the buffer to process only the payload data */
+            os_mbuf_adj(om, BLE_LL_PDU_HDR_LEN);
+
+            llid = hdr_byte & BLE_LL_BIS_PDU_HDR_LLID_MASK;
+
+            if (llid == BLE_LL_BIS_LLID_DATA_PDU_UNFRAMED_CMPLT) {
+                /* Unframed BIS Data PDU; end fragment of an SDU or a complete SDU. */
+                if (cmplt) {
+                    /* Core 6.0 | Vol 6, Part G | 4
+                     * Unframed SDUs without exactly one fragment with LLID=0b00 shall be
+                     * discarded or reported as data with errors.
+                     */
+                    error = true;
+                }
+
+                if (sdu != NULL) {
+                    os_mbuf_concat(sdu, om);
+                } else {
+                    sdu = om;
+                }
+                cmplt = true;
+            } else if (llid == BLE_LL_BIS_LLID_DATA_PDU_UNFRAMED_SC) {
+                /* Unframed BIS Data PDU; start or continuation fragment of an SDU. */
+                if (cmplt && om->om_len > BLE_LL_PDU_HDR_LEN) {
+                    /* Core 6.0 | Vol 6, Part G | 4
+                     * Unframed SDUs where the fragment with LLID=0b00 is followed by a fragment
+                     * with LLID=0b01 and containing at least one octet of data shall be discarded
+                     * or reported as data with errors.
+                     */
+                    error = true;
+                }
+
+                if (sdu != NULL) {
+                    os_mbuf_concat(sdu, om);
+                } else {
+                    sdu = om;
+                }
+            } else {
+                os_mbuf_free_chain(om);
+                error = true;
+            }
+
+            entry = STAILQ_FIRST(&mux->pdu_q);
+        }
+
+        /* SDU shall be complete */
+        error |= !cmplt;
+
+        /* Core 6.0 | Vol 6, Part G, 4
+         * SDUs with a length exceeding Max_SDU. In this case, the length of the SDU reported
+         * to the upper layer shall not exceed the Max_SDU length. The SDU shall be truncated
+         * to Max_SDU octets.
+         */
+        if (sdu != NULL && os_mbuf_len(sdu) > mux->max_sdu) {
+            os_mbuf_adj(sdu, -(os_mbuf_len(sdu) - mux->max_sdu));
+            error = true;
+        }
+
+        if (mux->cb != NULL) {
+            mux->cb->sdu_send(mux, sdu, mux->event_tx_timestamp, ++mux->sdu_counter, !error);
+        }
+
+        if (sdu != NULL) {
+            os_mbuf_free_chain(sdu);
+        }
+    }
+}
+
+static void
+ble_ll_isoal_mux_flush(struct ble_ll_isoal_mux *mux)
+{
+    struct os_mbuf_pkthdr *entry, *prev;
+    struct ble_mbuf_hdr *hdr;
+    struct os_mbuf *om;
+    uint8_t idx;
+
+    prev = NULL;
+    entry = STAILQ_FIRST(&mux->pdu_q);
+    while (entry != NULL) {
+        om = OS_MBUF_PKTHDR_TO_MBUF(entry);
+
+        hdr = BLE_MBUF_HDR_PTR(om);
+        idx = pdu_idx_get(hdr);
+        if (idx >= mux->bn) {
+            /* Pre-transmission - update payload index only */
+            pdu_idx_set(hdr, idx - mux->bn);
+
+            prev = entry;
+            entry = STAILQ_NEXT(entry, omp_next);
+            continue;
+        }
+
+        /* Current event data */
+        if (prev == NULL) {
+            STAILQ_REMOVE_HEAD(&mux->pdu_q, omp_next);
+        } else {
+            STAILQ_REMOVE_AFTER(&mux->pdu_q, prev, omp_next);
+        }
+
+        if (prev == NULL) {
+            entry = STAILQ_FIRST(&mux->pdu_q);
+        } else {
+            entry = STAILQ_NEXT(prev, omp_next);
+        }
+
+        os_mbuf_free(om);
+    }
+}
+
+static void
+ble_ll_isoal_mux_event_rx_done(struct ble_ll_isoal_mux *mux)
+{
+    if (mux->framed) {
+        ble_ll_isoal_mux_reassemble(mux);
+    } else {
+        ble_ll_isoal_mux_recombine(mux);
+    }
+
+    ble_ll_isoal_mux_flush(mux);
+}
+
 int
 ble_ll_isoal_mux_event_done(struct ble_ll_isoal_mux *mux)
 {
@@ -284,11 +632,52 @@ ble_ll_isoal_mux_event_done(struct ble_ll_isoal_mux *mux)
         mux->last_tx_packet_seq_num = blehdr->txiso.packet_seq_num;
     }
 
+    ble_ll_isoal_mux_event_rx_done(mux);
+
     if (mux->framed) {
         return ble_ll_isoal_mux_framed_event_done(mux);
     }
 
     return ble_ll_isoal_mux_unframed_event_done(mux);
+}
+
+void
+ble_ll_isoal_mux_pdu_enqueue(struct ble_ll_isoal_mux *mux, uint8_t idx, struct os_mbuf *pdu)
+{
+    struct os_mbuf_pkthdr *entry, *prev;
+    struct ble_mbuf_hdr *hdr;
+    struct os_mbuf *om;
+
+    hdr = BLE_MBUF_HDR_PTR(pdu);
+    pdu_idx_set(hdr, idx);
+
+    prev = NULL;
+    entry = STAILQ_FIRST(&mux->pdu_q);
+    while (entry) {
+        om = OS_MBUF_PKTHDR_TO_MBUF(entry);
+        hdr = BLE_MBUF_HDR_PTR(om);
+
+        if (pdu_idx_get(hdr) == idx) {
+            /* Already queued */
+            os_mbuf_free_chain(pdu);
+            return;
+        }
+
+        if (pdu_idx_get(hdr) > idx) {
+            /* Insert before */
+            break;
+        }
+
+        prev = entry;
+        entry = STAILQ_NEXT(entry, omp_next);
+    }
+
+    entry = OS_MBUF_PKTHDR(pdu);
+    if (prev) {
+        STAILQ_INSERT_AFTER(&mux->pdu_q, prev, entry, omp_next);
+    } else {
+        STAILQ_INSERT_HEAD(&mux->pdu_q, entry, omp_next);
+    }
 }
 
 static int
@@ -473,6 +862,15 @@ ble_ll_isoal_mux_pdu_get(struct ble_ll_isoal_mux *mux, uint8_t idx,
     }
 
     return ble_ll_isoal_mux_unframed_get(mux, idx, llid, dptr);
+}
+
+int
+ble_ll_isoal_mux_cb_set(struct ble_ll_isoal_mux *mux,
+                        const struct ble_ll_isoal_mux_cb *cb)
+{
+    mux->cb = cb;
+
+    return 0;
 }
 
 void

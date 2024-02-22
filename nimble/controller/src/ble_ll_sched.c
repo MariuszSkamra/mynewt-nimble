@@ -38,6 +38,7 @@
 #endif
 #include "ble_ll_priv.h"
 #include "ble_ll_conn_priv.h"
+#include "controller/ble_ll_iso_big_sync.h"
 
 #define BLE_LL_SCHED_MAX_DELAY_ANY      (0x7fffffff)
 
@@ -114,6 +115,17 @@ preempt_any_except_conn(struct ble_ll_sched_item *sch,
     return ble_ll_conn_is_lru(sch->cb_arg, item->cb_arg);
 }
 
+static int
+preempt_any_except_big_sync(struct ble_ll_sched_item *sch,
+                            struct ble_ll_sched_item *item)
+{
+    if (item->sched_type != BLE_LL_SCHED_TYPE_BIG_SYNC) {
+        return 1;
+    }
+
+    return 0;
+}
+
 static inline int
 ble_ll_sched_check_overlap(struct ble_ll_sched_item *sch1,
                            struct ble_ll_sched_item *sch2)
@@ -181,6 +193,12 @@ ble_ll_sched_preempt(struct ble_ll_sched_item *sch,
 #if MYNEWT_VAL(BLE_LL_EXT)
             case BLE_LL_SCHED_TYPE_EXTERNAL:
                 ble_ll_ext_sched_removed(entry);
+                break;
+#endif
+#if MYNEWT_VAL(BLE_LL_ISO_BROADCAST_RECEIVER)
+            case BLE_LL_SCHED_TYPE_BIG_SYNC:
+                /* FIXME sometimes it may be useful to preempt... */
+                BLE_LL_ASSERT(0);
                 break;
 #endif
             default:
@@ -865,6 +883,28 @@ ble_ll_sched_iso_big(struct ble_ll_sched_item *sch, int first, int fixed)
 }
 #endif /* BLE_LL_ISO_BROADCASTER */
 
+#if MYNEWT_VAL(BLE_LL_ISO_BROADCAST_RECEIVER)
+int
+ble_ll_sched_iso_big_sync(struct ble_ll_sched_item *sch)
+{
+    os_sr_t sr;
+    int rc;
+
+    OS_ENTER_CRITICAL(sr);
+
+    rc = ble_ll_sched_insert(sch, 0, preempt_any);
+
+    OS_EXIT_CRITICAL(sr);
+
+    // ble_ll_hci_ev_send_vs_printf(0xfe, "start_time_us %d",
+    //                              ble_ll_tmr_t2u(sch->start_time) + sch->remainder);
+
+    ble_ll_sched_restart();
+
+    return rc;
+}
+#endif
+
 /**
  * Remove a schedule element
  *
@@ -1010,6 +1050,11 @@ ble_ll_sched_execute_item(struct ble_ll_sched_item *sch)
         ble_ll_iso_big_halt();
         break;
 #endif
+#if MYNEWT_VAL(BLE_LL_ISO_BROADCAST_RECEIVER)
+    case BLE_LL_STATE_BIG_SYNC:
+        ble_ll_iso_big_sync_halt();
+        break;
+#endif
 #if MYNEWT_VAL(BLE_LL_EXT)
     case BLE_LL_STATE_EXTERNAL:
         ble_ll_ext_halt();
@@ -1113,7 +1158,7 @@ ble_ll_sched_scan_aux(struct ble_ll_sched_item *sch)
 
     OS_ENTER_CRITICAL(sr);
 
-    rc = ble_ll_sched_insert(sch, 0, preempt_none);
+    rc = ble_ll_sched_insert(sch, 0, preempt_any_except_big_sync);
 
     OS_EXIT_CRITICAL(sr);
 
