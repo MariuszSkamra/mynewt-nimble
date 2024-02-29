@@ -17,7 +17,7 @@
 # under the License.
 #
 
-pkg.name: audio/targets/btshell_native
+pkg.name: audio/targets/native_btshell_audio
 pkg.type: target
 pkg.description: Target for native btshell application with LE Audio
                  functionality enabled
