@@ -26,6 +26,7 @@
 
 #define STR_NULL        "null"
 
+#if (MYNEWT_VAL(BLE_AUDIO))
 #if (MYNEWT_VAL(BLE_ISO_BROADCAST_SOURCE))
 #include "audio/ble_audio_broadcast_source.h"
 int
@@ -1058,6 +1059,7 @@ scan_delegator_audio_event_handler(struct ble_audio_event *event, void *arg)
     return 0;
 }
 #endif /* BLE_AUDIO_SCAN_DELEGATOR */
+#endif /* BLE_AUDIO */
 
 void
 btshell_leaudio_init(void)
