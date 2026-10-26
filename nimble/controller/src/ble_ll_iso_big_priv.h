@@ -55,6 +55,8 @@ struct ble_ll_iso_bis {
     uint8_t n;
     /* group number */
     uint8_t g;
+    /* PDUs received in the BIS event, by index, their repetitions not being buffered */
+    uint32_t rx_pdus;
 
     union {
         struct ble_ll_iso_rx rx;
@@ -117,6 +119,9 @@ struct ble_ll_iso_big {
 
     uint16_t subevents_rem;
     struct ble_ll_iso_bis *bis;
+    /* BIS and index of the data PDU being received, NULL if none */
+    struct ble_ll_iso_bis *rx_bis;
+    uint8_t rx_pdu_idx;
 
     struct ble_ll_iso_bis_q bis_q;
 

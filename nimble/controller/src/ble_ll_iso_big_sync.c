@@ -85,6 +85,7 @@ STATS_SECT_START(ble_ll_iso_big_sync_stats)
     STATS_SECT_ENTRY(rx_data_pdus)
     STATS_SECT_ENTRY(rx_data_bytes)
     STATS_SECT_ENTRY(rx_malformed_ctrl_pdus)
+    STATS_SECT_ENTRY(rx_pdus_no_mem)
 STATS_SECT_END
 STATS_SECT_DECL(ble_ll_iso_big_sync_stats) ble_ll_iso_big_sync_stats;
 
@@ -95,6 +96,7 @@ STATS_NAME_START(ble_ll_iso_big_sync_stats)
     STATS_NAME(ble_ll_iso_big_sync_stats, rx_data_pdus)
     STATS_NAME(ble_ll_iso_big_sync_stats, rx_data_bytes)
     STATS_NAME(ble_ll_iso_big_sync_stats, rx_malformed_ctrl_pdus)
+    STATS_NAME(ble_ll_iso_big_sync_stats, rx_pdus_no_mem)
 STATS_NAME_END(ble_ll_iso_big_sync_stats)
 
 static struct ble_ll_iso_big *
@@ -812,6 +814,7 @@ ble_ll_iso_big_sync_event_sched_cb(struct ble_ll_sched_item *sch)
         bis->subevent_num = 0;
         bis->n = 0;
         bis->g = 0;
+        bis->rx_pdus = 0;
     }
 
     /* Select 1st BIS for reception */
@@ -1048,11 +1051,24 @@ ble_ll_iso_big_sync_rx_isr_end(uint8_t *rxbuf, struct ble_mbuf_hdr *rxhdr)
      * ISO Data PDUs with CRC errors shall be reported as per Core 6.0 Vol 6, Part G.
      */
     alloc_rxpdu = BLE_MBUF_HDR_CRC_OK(rxhdr);
+
+    /* A repetition of a data PDU already received in the BIS event would be dropped */
+    if (alloc_rxpdu && big->rx_bis && big->rx_pdu_idx < 32 &&
+        (big->rx_bis->rx_pdus & (1UL << big->rx_pdu_idx))) {
+        alloc_rxpdu = false;
+    }
+
     if (alloc_rxpdu) {
-        /* Allocate buffer to copy the Broadcast Isochronous PDU header and payload */
+        /* Allocate buffer to copy the Broadcast Isochronous PDU header and payload.
+         * Without buffer, e.g. with the other roles receiving meanwhile, the PDU
+         * is dropped, as if not received.
+         */
         rxpdu = ble_ll_rxpdu_alloc(BLE_LL_PDU_HDR_LEN + rx_pyld_len);
-        /* TODO: Remove the assert below */
-        BLE_LL_ASSERT(rxpdu);
+        if (rxpdu == NULL) {
+            STATS_INC(ble_ll_iso_big_sync_stats, rx_pdus_no_mem);
+        } else if (big->rx_bis && big->rx_pdu_idx < 32) {
+            big->rx_bis->rx_pdus |= 1UL << big->rx_pdu_idx;
+        }
     }
 
     if (rxpdu) {
@@ -1094,6 +1110,7 @@ ble_ll_iso_big_sync_rx_isr_early_end(uint8_t *rxbuf, struct ble_mbuf_hdr *rxhdr)
     BLE_LL_ASSERT(big);
 
     crc_ok = BLE_MBUF_HDR_CRC_OK(rxhdr);
+    big->rx_bis = NULL;
 
     if (crc_ok) {
         hdr_byte = rxbuf[0];
@@ -1115,6 +1132,9 @@ ble_ll_iso_big_sync_rx_isr_early_end(uint8_t *rxbuf, struct ble_mbuf_hdr *rxhdr)
             /* Save the BIS connection handle and PDU index */
             rxhdr->rxinfo.handle = bis->conn.handle;
             pdu_user_data.pdu_idx = pdu_idx_get(big, bis);
+
+            big->rx_bis = bis;
+            big->rx_pdu_idx = pdu_user_data.pdu_idx;
         }
 
         pdu_user_data.big_handle = big->handle;
