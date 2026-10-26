@@ -117,6 +117,10 @@ struct ble_ll_iso_big {
     struct ble_ll_sched_item sch;
     struct ble_npl_event event_done;
 
+    /* Expected anchor point of the scheduled BIG event */
+    uint32_t event_anchor_ticks;
+    uint8_t event_anchor_rem_us;
+
     uint16_t subevents_rem;
     struct ble_ll_iso_bis *bis;
     /* BIS and index of the data PDU being received, NULL if none */

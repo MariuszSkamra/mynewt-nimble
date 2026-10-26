@@ -319,6 +319,9 @@ big_sync_sched_set(struct ble_ll_iso_big *big, uint32_t offset_us)
 
     ble_ll_tmr_add(&big->sch.start_time, &big->sch.remainder, offset_us);
 
+    big->event_anchor_ticks = big->sch.start_time;
+    big->event_anchor_rem_us = big->sch.remainder;
+
     if (big->nse < 3) {
         max_ww_us = (big->iso_interval * 1250 / 2) - BLE_LL_IFS;
     } else {
@@ -880,13 +883,13 @@ ble_ll_iso_big_sync_event_sched_cb(struct ble_ll_sched_item *sch)
 
     ble_ll_tx_power_set(g_ble_ll_tx_power);
 
-    timestamp = ble_ll_tmr_t2u(big->anchor_base_ticks) + big->anchor_base_rem_us;
+    /* From the anchor point of this event, the anchor base being the one of a previous event */
+    timestamp = ble_ll_tmr_t2u(big->event_anchor_ticks) + big->event_anchor_rem_us;
     if (big->framed) {
         timestamp += big->sync_delay + big->sdu_interval + big->iso_interval * 1250;
     } else {
         timestamp += big->sync_delay;
     }
-    timestamp += big->anchor_offset * big->iso_interval * 1250;
 
     /* XXX calculate this in advance at the end of a previous event? */
     big->subevents_rem = big->num_bis * big->nse;
