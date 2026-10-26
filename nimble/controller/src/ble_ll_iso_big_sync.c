@@ -662,8 +662,13 @@ ble_ll_iso_big_sync_event_done_ev(struct ble_npl_event *ev)
 
     big = CONTAINER_OF(ev, struct ble_ll_iso_big, event_done);
 
-    STAILQ_FOREACH(bis, &big->bis_q, bis_q_next) {
-        ble_ll_iso_rx_event_done(&bis->rx);
+    /* Not reported once terminated, e.g. by the host, which does not expect them anymore, the
+     * PDUs being freed with the BIG
+     */
+    if (!ble_ll_iso_big_term_pending(big)) {
+        STAILQ_FOREACH(bis, &big->bis_q, bis_q_next) {
+            ble_ll_iso_rx_event_done(&bis->rx);
+        }
     }
 
     ble_ll_iso_big_sync_event_done(big);
@@ -1028,7 +1033,16 @@ ble_ll_iso_big_sync_rx_isr_start(uint8_t pdu_type, struct ble_mbuf_hdr *rxhdr)
         big->anchor_base_rem_us = rxhdr->rem_usecs;
     }
 
-    return ble_ll_iso_big_term_pending(big) ? -1 : 0;
+    if (ble_ll_iso_big_term_pending(big)) {
+        /* The reception is aborted, the event ended, the BIG being terminated once done.
+         * The event would never end otherwise, the BIG never being freed, the link layer
+         * staying in the BIG sync state.
+         */
+        ble_ll_iso_big_sync_halt();
+        return -1;
+    }
+
+    return 0;
 }
 
 static int
@@ -1206,12 +1220,15 @@ ble_ll_iso_big_sync_rx_isr_end(uint8_t *rxbuf, struct ble_mbuf_hdr *rxhdr)
     to_rx = big->subevents_rem > 0 || big->cstf;
     subevent_transition_set(big);
 
-    if (!to_rx) {
+    /* Ended once the last subevent is received, or the BIG terminated: the reception is
+     * stopped, the event would never end otherwise.
+     */
+    if (!to_rx || ble_ll_iso_big_term_pending(big)) {
         ble_ll_iso_big_sync_halt();
         rc = -1;
     }
 
-    return ble_ll_iso_big_term_pending(big) ? -1 : rc;
+    return rc;
 }
 
 int
