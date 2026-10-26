@@ -108,6 +108,14 @@ preempt_any_except_conn(struct ble_ll_sched_item *sch,
 {
     BLE_LL_ASSERT(sch->sched_type == BLE_LL_SCHED_TYPE_CONN);
 
+    /* The isochronous data is lost with the BIG event, the connection event is skipped
+     * instead, unless the connection would be lost otherwise. The connection events would
+     * never take place otherwise, e.g. with a connection interval multiple of the ISO interval.
+     */
+    if (item->sched_type == BLE_LL_SCHED_TYPE_BIG_SYNC) {
+        return ble_ll_conn_is_starving(sch->cb_arg);
+    }
+
     if (item->sched_type != BLE_LL_SCHED_TYPE_CONN) {
         return 1;
     }
@@ -196,8 +204,7 @@ ble_ll_sched_preempt(struct ble_ll_sched_item *sch,
 #endif
 #if MYNEWT_VAL(BLE_LL_ISO_BROADCAST_SYNC)
             case BLE_LL_SCHED_TYPE_BIG_SYNC:
-                /* FIXME sometimes it may be useful to preempt... */
-                BLE_LL_ASSERT(0);
+                ble_ll_iso_big_sync_rmvd_from_sched(entry->cb_arg);
                 break;
 #endif
             default:
@@ -885,6 +892,22 @@ ble_ll_sched_iso_big(struct ble_ll_sched_item *sch, int first, int fixed)
 #endif /* BLE_LL_ISO_BROADCASTER */
 
 #if MYNEWT_VAL(BLE_LL_ISO_BROADCAST_SYNC)
+/* The BIG event is skipped instead of a connection event that would be lost otherwise, see
+ * preempt_any_except_conn()
+ */
+static int
+preempt_any_except_starving_conn(struct ble_ll_sched_item *sch,
+                                 struct ble_ll_sched_item *item)
+{
+#if MYNEWT_VAL(BLE_LL_ROLE_PERIPHERAL) || MYNEWT_VAL(BLE_LL_ROLE_CENTRAL)
+    if (item->sched_type == BLE_LL_SCHED_TYPE_CONN) {
+        return !ble_ll_conn_is_starving(item->cb_arg);
+    }
+#endif
+
+    return 1;
+}
+
 int
 ble_ll_sched_iso_big_sync(struct ble_ll_sched_item *sch)
 {
@@ -893,7 +916,7 @@ ble_ll_sched_iso_big_sync(struct ble_ll_sched_item *sch)
 
     OS_ENTER_CRITICAL(sr);
 
-    rc = ble_ll_sched_insert(sch, 0, preempt_any);
+    rc = ble_ll_sched_insert(sch, 0, preempt_any_except_starving_conn);
 
     OS_EXIT_CRITICAL(sr);
 

@@ -573,9 +573,12 @@ fail:
     ble_ll_iso_big_free(big);
 }
 
+static uint32_t sdu_sync_ref_get(struct ble_ll_iso_big *big);
+
 static void
 ble_ll_iso_big_sync_event_done(struct ble_ll_iso_big *big)
 {
+    struct ble_ll_iso_bis *bis;
     uint64_t big_counter;
     uint32_t offset_us;
     int rc;
@@ -627,6 +630,12 @@ ble_ll_iso_big_sync_event_done(struct ble_ll_iso_big *big)
         rc = ble_ll_sched_iso_big_sync(&big->sch);
         if (rc >= 0) {
             break;
+        }
+
+        /* The event is skipped, its SDUs reported lost on time */
+        STAILQ_FOREACH(bis, &big->bis_q, bis_q_next) {
+            ble_ll_iso_rx_event_start(&bis->rx, sdu_sync_ref_get(big));
+            ble_ll_iso_rx_event_done(&bis->rx);
         }
 
         big->anchor_offset++;
@@ -856,6 +865,42 @@ ble_ll_iso_big_sync_rx_start(struct ble_ll_iso_big *big, uint32_t start_time,
     return 0;
 }
 
+/* SDU synchronization reference of the scheduled event */
+static uint32_t
+sdu_sync_ref_get(struct ble_ll_iso_big *big)
+{
+    uint32_t timestamp;
+
+    /* From the anchor point of this event, the anchor base being the one of a previous event */
+    timestamp = ble_ll_tmr_t2u(big->event_anchor_ticks) + big->event_anchor_rem_us;
+    if (big->framed) {
+        timestamp += big->sync_delay + big->sdu_interval + big->iso_interval * 1250;
+    } else {
+        timestamp += big->sync_delay;
+    }
+
+    return timestamp;
+}
+
+void
+ble_ll_iso_big_sync_rmvd_from_sched(struct ble_ll_iso_big *big)
+{
+    struct ble_ll_iso_bis *bis;
+    uint32_t timestamp;
+
+    /* The event is skipped, as if not received: its SDUs reported lost, and the next event
+     * scheduled.
+     */
+    timestamp = sdu_sync_ref_get(big);
+    STAILQ_FOREACH(bis, &big->bis_q, bis_q_next) {
+        ble_ll_iso_rx_event_start(&bis->rx, timestamp);
+    }
+
+    big->anchor_offset++;
+
+    ble_ll_iso_big_sync_event_done_to_ll(big);
+}
+
 static int
 ble_ll_iso_big_sync_event_sched_cb(struct ble_ll_sched_item *sch)
 {
@@ -883,13 +928,7 @@ ble_ll_iso_big_sync_event_sched_cb(struct ble_ll_sched_item *sch)
 
     ble_ll_tx_power_set(g_ble_ll_tx_power);
 
-    /* From the anchor point of this event, the anchor base being the one of a previous event */
-    timestamp = ble_ll_tmr_t2u(big->event_anchor_ticks) + big->event_anchor_rem_us;
-    if (big->framed) {
-        timestamp += big->sync_delay + big->sdu_interval + big->iso_interval * 1250;
-    } else {
-        timestamp += big->sync_delay;
-    }
+    timestamp = sdu_sync_ref_get(big);
 
     /* XXX calculate this in advance at the end of a previous event? */
     big->subevents_rem = big->num_bis * big->nse;

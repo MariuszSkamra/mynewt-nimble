@@ -35,6 +35,10 @@ void ble_ll_iso_big_sync_rx_pdu_in(struct os_mbuf **rxpdu, struct ble_mbuf_hdr *
 void ble_ll_iso_big_sync_wfr_timer_exp(void);
 void ble_ll_iso_big_sync_halt(void);
 
+struct ble_ll_iso_big;
+/* The scheduled BIG event was removed from the scheduler, preempted */
+void ble_ll_iso_big_sync_rmvd_from_sched(struct ble_ll_iso_big *big);
+
 int ble_ll_iso_big_sync_hci_create(const uint8_t *cmdbuf, uint8_t len);
 int ble_ll_iso_big_sync_hci_terminate(const uint8_t *cmdbuf, uint8_t len,
                                       uint8_t *rspbuf, uint8_t *rsplen);
