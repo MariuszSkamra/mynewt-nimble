@@ -807,7 +807,7 @@ ble_ll_iso_big_sync_event_sched_cb(struct ble_ll_sched_item *sch)
     timestamp += big->anchor_offset * big->iso_interval * 1250;
 
     /* XXX calculate this in advance at the end of a previous event? */
-    big->subevents_rem = big->num_bis * big->nse * big->bn;
+    big->subevents_rem = big->num_bis * big->nse;
     STAILQ_FOREACH(bis, &big->bis_q, bis_q_next) {
         ble_ll_iso_rx_event_start(&bis->rx, timestamp);
 
@@ -901,7 +901,7 @@ ble_ll_iso_big_sync_rx_isr_start(uint8_t pdu_type, struct ble_mbuf_hdr *rxhdr)
     big = g_ble_ll_iso_big_curr;
     BLE_LL_ASSERT(big);
 
-    if (big->subevents_rem == big->num_bis * big->nse * big->bn) {
+    if (big->subevents_rem == big->num_bis * big->nse) {
         big->anchor_offset = 0;
         big->anchor_base_ticks = rxhdr->beg_cputime;
         big->anchor_base_rem_us = rxhdr->rem_usecs;
@@ -1245,7 +1245,7 @@ ble_ll_iso_big_sync_wfr_timer_exp(void)
         return;
     }
 
-    if (big->subevents_rem == big->num_bis * big->nse * big->bn) {
+    if (big->subevents_rem == big->num_bis * big->nse) {
         big->anchor_offset++;
     }
 
