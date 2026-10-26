@@ -1184,8 +1184,9 @@ ble_ll_iso_big_sync_rx_isr_end(uint8_t *rxbuf, struct ble_mbuf_hdr *rxhdr)
     /**
      * No need to alloc rxpdu for BIG Control PDU with invalid CRC.
      * ISO Data PDUs with CRC errors shall be reported as per Core 6.0 Vol 6, Part G.
+     * The PDUs failing the MIC check are not authenticated, ignored as well.
      */
-    alloc_rxpdu = BLE_MBUF_HDR_CRC_OK(rxhdr);
+    alloc_rxpdu = BLE_MBUF_HDR_CRC_OK(rxhdr) && !BLE_MBUF_HDR_MIC_FAILURE(rxhdr);
 
     /* A repetition of a data PDU already received in the BIS event would be dropped */
     if (alloc_rxpdu && big->rx_bis && big->rx_pdu_idx < 32 &&
@@ -1241,12 +1242,21 @@ ble_ll_iso_big_sync_rx_isr_early_end(uint8_t *rxbuf, struct ble_mbuf_hdr *rxhdr)
     uint8_t cssn;
     uint8_t cstf;
     bool crc_ok;
+    bool mic_ok;
 
     big = g_ble_ll_iso_big_curr;
     BLE_LL_ASSERT(big);
 
     crc_ok = BLE_MBUF_HDR_CRC_OK(rxhdr);
+    mic_ok = !BLE_MBUF_HDR_MIC_FAILURE(rxhdr);
     big->rx_bis = NULL;
+
+    /* A wrong Broadcast_Code: the synchronization fails, reported with the MIC failure, the
+     * event ending once the PDU is received
+     */
+    if (crc_ok && !mic_ok && ble_ll_iso_big_sync_pending(big)) {
+        big->term_reason = BLE_ERR_CONN_TERM_MIC;
+    }
 
     if (crc_ok) {
         hdr_byte = rxbuf[0];
@@ -1262,7 +1272,7 @@ ble_ll_iso_big_sync_rx_isr_early_end(uint8_t *rxbuf, struct ble_mbuf_hdr *rxhdr)
             big->cssn = cssn;
         }
 
-        if (BLE_LL_BIS_LLID_IS_DATA(hdr_byte)) {
+        if (BLE_LL_BIS_LLID_IS_DATA(hdr_byte) && mic_ok) {
             bis = big->bis;
 
             /* Save the BIS connection handle and PDU index */
