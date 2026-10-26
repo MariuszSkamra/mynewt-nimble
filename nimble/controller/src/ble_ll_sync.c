@@ -1819,9 +1819,11 @@ ble_ll_sync_cancel(void)
     for (i = 0; i < BLE_LL_SYNC_CNT; i++) {
         sm = &g_ble_ll_sync_sm[i];
 
-        /* cancelled before fist sync info packet */
+        /* cancelled before fist sync info packet, the state machine cleared as initialized,
+         * its schedule callback being kept for the next sync
+         */
         if (sm->flags & BLE_LL_SYNC_SM_FLAG_RESERVED) {
-            memset(sm, 0, sizeof(*sm));
+            ble_ll_sync_sm_clear(sm);
             break;
         }
 
@@ -2251,7 +2253,7 @@ ble_ll_sync_periodic_ind(struct ble_ll_conn_sm *connsm,
         if (ble_ll_sync_next_event(sm, ww_adjust) < 0) {
             /* release SM if this failed */
             ble_ll_sync_transfer_received(sm, BLE_ERR_CONN_ESTABLISHMENT);
-            memset(sm, 0, sizeof(*sm));
+            ble_ll_sync_sm_clear(sm);
             return;
         }
     }
@@ -2262,7 +2264,7 @@ ble_ll_sync_periodic_ind(struct ble_ll_conn_sm *connsm,
     if (ble_ll_sched_sync(&sm->sch)) {
         /* release SM if this failed */
         ble_ll_sync_transfer_received(sm, BLE_ERR_CONN_ESTABLISHMENT);
-        memset(sm, 0, sizeof(*sm));
+        ble_ll_sync_sm_clear(sm);
         return;
     }
 
