@@ -89,7 +89,12 @@ int ble_phy_init(void);
 int ble_phy_setchan(uint8_t chan, uint32_t access_addr, uint32_t crcinit);
 uint8_t ble_phy_chan_get(void);
 
-/* Set direction of the next transition */
+/*
+ * Set the next transition, done once the current PDU ends, and its time, from the end of the PDU,
+ * or from its start for the ISO subevents. The PDU of a subevent received with
+ * BLE_PHY_TRANSITION_TO_RX_ISO_SUBEVENT is waited for within the allowed jitter around its
+ * expected start, the one of a T_IFS transition within the active clock accuracy only.
+ */
 void ble_phy_transition_set(uint8_t trans, uint16_t usecs);
 
 /* Set transmit start time */

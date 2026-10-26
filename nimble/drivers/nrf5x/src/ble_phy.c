@@ -2455,13 +2455,15 @@ ble_phy_transition_set(uint8_t trans, uint16_t usecs)
         transition = PHY_TRANS_NONE;
     }
 
+    if (trans == BLE_PHY_TRANSITION_TO_RX_ISO_SUBEVENT) {
+        /* Within the allowed jitter around the expected start of the subevent */
+        usecs -= BLE_LL_JITTER_USECS;
+        g_ble_phy_data.wfr_usecs = 2 * BLE_LL_JITTER_USECS;
+    } else {
+        g_ble_phy_data.wfr_usecs = 0;
+    }
+
     g_ble_phy_data.phy_transition = transition;
     g_ble_phy_data.tifs_anchor = anchor;
     g_ble_phy_data.tifs_usecs = usecs ? usecs : BLE_LL_IFS;
-}
-
-void
-ble_phy_wfr_set(uint16_t usecs)
-{
-    g_ble_phy_data.wfr_usecs = usecs;
 }

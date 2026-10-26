@@ -674,6 +674,16 @@ ble_ll_iso_big_sync_halt(void)
     }
 }
 
+/* Sets the transition to the next subevent, if any, received from its expected start, relative
+ * to the start of the previous PDU, the PHY waiting for it within the allowed jitter
+ */
+static void
+subevent_transition_set(struct ble_ll_iso_big *big, bool to_rx)
+{
+    ble_phy_transition_set(to_rx ? BLE_PHY_TRANSITION_TO_RX_ISO_SUBEVENT : BLE_PHY_TRANSITION_NONE,
+                           big->interleaved ? big->bis_spacing : big->sub_interval);
+}
+
 static uint8_t
 pdu_idx_get(struct ble_ll_iso_big *big, struct ble_ll_iso_bis *bis)
 {
@@ -826,9 +836,7 @@ ble_ll_iso_big_sync_event_sched_cb(struct ble_ll_sched_item *sch)
     }
 
     to_rx = big->subevents_rem > 1;
-    ble_phy_transition_set(
-        to_rx ? BLE_PHY_TRANSITION_TO_RX_ISO_SUBEVENT : BLE_PHY_TRANSITION_NONE,
-        big->interleaved ? big->bis_spacing : big->sub_interval);
+    subevent_transition_set(big, to_rx);
 
     rc = ble_ll_iso_big_sync_rx_start(
         big, sch->start_time + g_ble_ll_sched_offset_ticks, sch->remainder);
@@ -1083,9 +1091,7 @@ ble_ll_iso_big_sync_rx_isr_end(uint8_t *rxbuf, struct ble_mbuf_hdr *rxhdr)
     }
 
     to_rx = big->subevents_rem > 0 || big->cstf;
-    ble_phy_transition_set(
-        to_rx ? BLE_PHY_TRANSITION_TO_RX_ISO_SUBEVENT : BLE_PHY_TRANSITION_NONE,
-        big->interleaved ? big->bis_spacing : big->sub_interval);
+    subevent_transition_set(big, to_rx);
 
     if (!to_rx) {
         ble_ll_iso_big_sync_halt();
@@ -1209,9 +1215,7 @@ ble_ll_iso_big_sync_rx_restart(struct ble_ll_iso_big *big)
     ble_ll_tmr_add(&ticks, &rem_us, offset_us);
 
     to_rx = big->subevents_rem > 0 || big->cstf;
-    ble_phy_transition_set(to_rx ? BLE_PHY_TRANSITION_TO_RX_ISO_SUBEVENT
-                                 : BLE_PHY_TRANSITION_NONE,
-                           interval_us);
+    subevent_transition_set(big, to_rx);
 
     return ble_ll_iso_big_sync_rx_start(big, ticks + g_ble_ll_sched_offset_ticks,
                                         rem_us);
