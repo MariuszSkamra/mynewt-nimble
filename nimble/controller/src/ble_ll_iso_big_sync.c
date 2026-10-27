@@ -401,6 +401,7 @@ biginfo_func(struct ble_ll_sync_sm *syncsm, uint8_t sca, uint32_t sync_ticks,
     big->iso_interval = (u32 >> 15) & 0x0FFF;
 
     bis_cnt = (u32 >> 27) & 0x1F;
+    big->num_bis_big = bis_cnt;
     if (bis_cnt < __builtin_popcount(sync_params->bis_mask)) {
         status = BLE_ERR_UNSUPPORTED;
         goto fail;
@@ -674,14 +675,86 @@ ble_ll_iso_big_sync_halt(void)
     }
 }
 
-/* Sets the transition to the next subevent, if any, received from its expected start, relative
- * to the start of the previous PDU, the PHY waiting for it within the allowed jitter
+/* Offset of the subevent n, from 0, of a BIS, from the start of the event, the one of the first
+ * BIS synced to. Core 6.0, Vol 6, Part B, 4.4.6.4: the subevent n of the BIS k starts
+ * (k - 1) x BIS_Spacing + (n - 1) x Sub_Interval after the BIG anchor point, in both
+ * arrangements, the BISes not synced to being accounted for.
+ */
+static uint32_t
+subevent_offset_us(const struct ble_ll_iso_big *big, const struct ble_ll_iso_bis *bis, uint8_t n)
+{
+    return (bis->num - STAILQ_FIRST(&big->bis_q)->num) * big->bis_spacing +
+           n * big->sub_interval;
+}
+
+/* Offset of the control subevent, following the last subevent of the last BIS of the BIG as a
+ * next subevent would
+ */
+static uint32_t
+ctrl_subevent_offset_us(const struct ble_ll_iso_big *big)
+{
+    return (big->num_bis_big - STAILQ_FIRST(&big->bis_q)->num) * big->bis_spacing +
+           (big->nse - 1) * big->sub_interval +
+           (big->interleaved ? big->bis_spacing : big->sub_interval);
+}
+
+/* Offset of the current subevent, the next one to receive */
+static uint32_t
+curr_subevent_offset_us(const struct ble_ll_iso_big *big)
+{
+    if (big->subevents_rem > 0) {
+        return subevent_offset_us(big, big->bis, big->bis->subevent_num);
+    }
+
+    return ctrl_subevent_offset_us(big);
+}
+
+/* Offset of the subevent following the current one, false if none. The control subevent follows
+ * the last BIS subevent, as its PDU may announce it.
+ */
+static bool
+next_subevent_offset_us(const struct ble_ll_iso_big *big, uint32_t *offset_us)
+{
+    const struct ble_ll_iso_bis *bis = big->bis;
+    const struct ble_ll_iso_bis *next;
+
+    if (big->subevents_rem > 1) {
+        if (!big->interleaved && bis->subevent_num + 1 < big->nse) {
+            *offset_us = subevent_offset_us(big, bis, bis->subevent_num + 1);
+        } else {
+            next = STAILQ_NEXT(bis, bis_q_next);
+            if (next == NULL) {
+                next = STAILQ_FIRST(&big->bis_q);
+            }
+            *offset_us = subevent_offset_us(big, next, next->subevent_num);
+        }
+        return true;
+    }
+
+    if (big->subevents_rem == 1) {
+        *offset_us = ctrl_subevent_offset_us(big);
+        return true;
+    }
+
+    return false;
+}
+
+/* Sets the transition to the subevent following the current one, if any, received from its
+ * expected start, relative to the start of the current PDU, the PHY waiting for it within the
+ * allowed jitter
  */
 static void
-subevent_transition_set(struct ble_ll_iso_big *big, bool to_rx)
+subevent_transition_set(struct ble_ll_iso_big *big)
 {
-    ble_phy_transition_set(to_rx ? BLE_PHY_TRANSITION_TO_RX_ISO_SUBEVENT : BLE_PHY_TRANSITION_NONE,
-                           big->interleaved ? big->bis_spacing : big->sub_interval);
+    uint32_t next_us;
+
+    if (!next_subevent_offset_us(big, &next_us)) {
+        ble_phy_transition_set(BLE_PHY_TRANSITION_NONE, 0);
+        return;
+    }
+
+    ble_phy_transition_set(BLE_PHY_TRANSITION_TO_RX_ISO_SUBEVENT,
+                           next_us - curr_subevent_offset_us(big));
 }
 
 static uint8_t
@@ -789,7 +862,6 @@ ble_ll_iso_big_sync_event_sched_cb(struct ble_ll_sched_item *sch)
 #if MYNEWT_VAL(BLE_LL_PHY)
     uint8_t phy_mode;
 #endif
-    bool to_rx;
     int rc;
 
     BLE_LL_ASSERT(big);
@@ -835,8 +907,7 @@ ble_ll_iso_big_sync_event_sched_cb(struct ble_ll_sched_item *sch)
         goto done;
     }
 
-    to_rx = big->subevents_rem > 1;
-    subevent_transition_set(big, to_rx);
+    subevent_transition_set(big);
 
     rc = ble_ll_iso_big_sync_rx_start(
         big, sch->start_time + g_ble_ll_sched_offset_ticks, sch->remainder);
@@ -1091,7 +1162,7 @@ ble_ll_iso_big_sync_rx_isr_end(uint8_t *rxbuf, struct ble_mbuf_hdr *rxhdr)
     }
 
     to_rx = big->subevents_rem > 0 || big->cstf;
-    subevent_transition_set(big, to_rx);
+    subevent_transition_set(big);
 
     if (!to_rx) {
         ble_ll_iso_big_sync_halt();
@@ -1194,28 +1265,18 @@ ble_ll_iso_big_sync_rx_pdu_in(struct os_mbuf **rxpdu, struct ble_mbuf_hdr *rxhdr
     }
 }
 
+/* Receives the current subevent from its expected start, e.g. once the previous one was missed */
 static int
 ble_ll_iso_big_sync_rx_restart(struct ble_ll_iso_big *big)
 {
-    struct ble_ll_iso_bis *bis;
-    uint32_t offset_us;
     uint32_t ticks;
-    uint16_t interval_us;
     uint8_t rem_us;
-    bool to_rx;
 
-    interval_us = big->interleaved ? big->bis_spacing : big->sub_interval;
     ticks = big->sch.start_time;
     rem_us = big->sch.remainder;
+    ble_ll_tmr_add(&ticks, &rem_us, curr_subevent_offset_us(big));
 
-    offset_us = 0;
-    STAILQ_FOREACH(bis, &big->bis_q, bis_q_next) {
-        offset_us += bis->subevent_num * interval_us;
-    }
-    ble_ll_tmr_add(&ticks, &rem_us, offset_us);
-
-    to_rx = big->subevents_rem > 0 || big->cstf;
-    subevent_transition_set(big, to_rx);
+    subevent_transition_set(big);
 
     return ble_ll_iso_big_sync_rx_start(big, ticks + g_ble_ll_sched_offset_ticks,
                                         rem_us);

@@ -124,6 +124,8 @@ struct ble_ll_iso_big {
     uint8_t rx_pdu_idx;
 
     struct ble_ll_iso_bis_q bis_q;
+    /* BISes in the BIG, the ones synced to and the others */
+    uint8_t num_bis_big;
 
 #if MYNEWT_VAL(BLE_LL_ISO_HCI_FEEDBACK_INTERVAL_MS)
     uint32_t last_feedback;
