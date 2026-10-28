@@ -304,6 +304,9 @@ static const uint8_t octet_44 = OCTET(
 #if BLE_LL_HOST_CONTROLLED_FEATURES
     BIT(1) /* HCI LE Set Host Feature */
 #endif
+#if MYNEWT_VAL(BLE_LL_ISO_BROADCAST_SYNC)
+    BIT(2) /* HCI LE Read ISO Link Quality */
+#endif
 );
 
 static const uint8_t octet_46 = OCTET(

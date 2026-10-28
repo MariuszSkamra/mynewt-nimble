@@ -573,6 +573,31 @@ fail:
     ble_ll_iso_big_free(big);
 }
 
+/* Counts the PDUs of the BIS event never received, once the event is done or skipped. The
+ * PDUs received are tracked by index, the next events ones, pretransmitted, being shifted to
+ * the next event.
+ */
+static void
+bis_stats_event_done(struct ble_ll_iso_big *big, struct ble_ll_iso_bis *bis)
+{
+    uint32_t mask = (1UL << big->bn) - 1;
+
+    bis->stats.unreceived += big->bn - __builtin_popcount(bis->rx_seen & mask);
+    bis->rx_seen >>= big->bn;
+}
+
+/* The PDU first received dropped without buffer: not received, its repetitions not duplicates */
+static void
+bis_stats_rx_undo(struct ble_ll_iso_big *big)
+{
+    struct ble_ll_iso_bis *bis = big->rx_bis;
+
+    if (big->rx_pdu_idx < 32) {
+        bis->rx_seen &= ~(1UL << big->rx_pdu_idx);
+    }
+    big->rx_first = 0;
+}
+
 static uint32_t sdu_sync_ref_get(struct ble_ll_iso_big *big);
 
 static void
@@ -638,6 +663,7 @@ ble_ll_iso_big_sync_event_done(struct ble_ll_iso_big *big)
         STAILQ_FOREACH(bis, &big->bis_q, bis_q_next) {
             ble_ll_iso_rx_event_start(&bis->rx, sdu_sync_ref_get(big));
             ble_ll_iso_rx_event_done(&bis->rx);
+            bis_stats_event_done(big, bis);
         }
 
         big->anchor_offset++;
@@ -670,6 +696,7 @@ ble_ll_iso_big_sync_event_done_ev(struct ble_npl_event *ev)
     if (!ble_ll_iso_big_term_pending(big)) {
         STAILQ_FOREACH(bis, &big->bis_q, bis_q_next) {
             ble_ll_iso_rx_event_done(&bis->rx);
+            bis_stats_event_done(big, bis);
         }
     }
 
@@ -1211,6 +1238,9 @@ ble_ll_iso_big_sync_rx_isr_end(uint8_t *rxbuf, struct ble_mbuf_hdr *rxhdr)
         rxpdu = ble_ll_rxpdu_alloc(BLE_LL_PDU_HDR_LEN + rx_pyld_len);
         if (rxpdu == NULL) {
             STATS_INC(ble_ll_iso_big_sync_stats, rx_pdus_no_mem);
+            if (big->rx_first) {
+                bis_stats_rx_undo(big);
+            }
         } else if (big->rx_bis && big->rx_pdu_idx < 32) {
             big->rx_bis->rx_pdus |= 1UL << big->rx_pdu_idx;
         }
@@ -1255,6 +1285,7 @@ ble_ll_iso_big_sync_rx_isr_early_end(uint8_t *rxbuf, struct ble_mbuf_hdr *rxhdr)
     uint8_t hdr_byte;
     uint8_t cssn;
     uint8_t cstf;
+    bool data_subevent;
     bool crc_ok;
     bool mic_ok;
 
@@ -1263,8 +1294,14 @@ ble_ll_iso_big_sync_rx_isr_early_end(uint8_t *rxbuf, struct ble_mbuf_hdr *rxhdr)
 
     crc_ok = BLE_MBUF_HDR_CRC_OK(rxhdr);
     mic_ok = !BLE_MBUF_HDR_MIC_FAILURE(rxhdr);
+    data_subevent = big->subevents_rem > 0;
     big->rx_bis = NULL;
     big->ctrl_rx = 0;
+    big->rx_first = 0;
+
+    if (data_subevent && !crc_ok) {
+        big->bis->stats.rx_crc_err++;
+    }
 
     /* A wrong Broadcast_Code: the synchronization fails, reported with the MIC failure, the
      * event ending once the PDU is received
@@ -1295,7 +1332,7 @@ ble_ll_iso_big_sync_rx_isr_early_end(uint8_t *rxbuf, struct ble_mbuf_hdr *rxhdr)
             big->ctrl_rx = 1;
         }
 
-        if (BLE_LL_BIS_LLID_IS_DATA(hdr_byte) && mic_ok) {
+        if (BLE_LL_BIS_LLID_IS_DATA(hdr_byte) && data_subevent && mic_ok) {
             bis = big->bis;
 
             /* Save the BIS connection handle and PDU index */
@@ -1304,6 +1341,15 @@ ble_ll_iso_big_sync_rx_isr_early_end(uint8_t *rxbuf, struct ble_mbuf_hdr *rxhdr)
 
             big->rx_bis = bis;
             big->rx_pdu_idx = pdu_user_data.pdu_idx;
+
+            if (big->rx_pdu_idx < 32 && (bis->rx_seen & (1UL << big->rx_pdu_idx))) {
+                bis->stats.rx_dup++;
+            } else {
+                if (big->rx_pdu_idx < 32) {
+                    bis->rx_seen |= 1UL << big->rx_pdu_idx;
+                }
+                big->rx_first = 1;
+            }
         }
 
         pdu_user_data.big_handle = big->handle;
@@ -1535,6 +1581,51 @@ ble_ll_iso_big_sync_hci_terminate(const uint8_t *cmdbuf, uint8_t len,
     }
 
     return 0;
+}
+
+static struct ble_ll_iso_bis *
+bis_find_by_handle(uint16_t conn_handle)
+{
+    struct ble_ll_iso_big *big;
+    struct ble_ll_iso_bis *bis;
+
+    STAILQ_FOREACH(big, &big_q, big_q_next) {
+        STAILQ_FOREACH(bis, &big->bis_q, bis_q_next) {
+            if (bis->conn.handle == conn_handle) {
+                return bis;
+            }
+        }
+    }
+
+    return NULL;
+}
+
+int
+ble_ll_iso_big_sync_hci_read_link_quality(const uint8_t *cmdbuf, uint8_t len,
+                                          uint8_t *rspbuf, uint8_t *rsplen)
+{
+    const struct ble_hci_le_read_iso_link_quality_cp *cmd = (const void *)cmdbuf;
+    struct ble_hci_le_read_iso_link_quality_rp *rsp = (void *)rspbuf;
+    const struct ble_ll_iso_bis *bis;
+
+    if (len != sizeof(*cmd)) {
+        return BLE_ERR_INV_HCI_CMD_PARMS;
+    }
+
+    bis = bis_find_by_handle(le16toh(cmd->conn_handle));
+    if (bis == NULL) {
+        return BLE_ERR_UNK_CONN_ID;
+    }
+
+    /* The TX counters do not apply to a receiver */
+    memset(rsp, 0, sizeof(*rsp));
+    rsp->conn_handle = cmd->conn_handle;
+    rsp->crc_error_pkts = htole32(bis->stats.rx_crc_err);
+    rsp->rx_unreceived_pkts = htole32(bis->stats.unreceived);
+    rsp->duplicate_pkts = htole32(bis->stats.rx_dup);
+    *rsplen = sizeof(*rsp);
+
+    return BLE_ERR_SUCCESS;
 }
 
 void

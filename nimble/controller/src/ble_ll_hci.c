@@ -1309,6 +1309,9 @@ ble_ll_hci_le_cmd_proc(const uint8_t *cmdbuf, uint8_t len, uint16_t ocf,
     case BLE_HCI_OCF_LE_BIG_TERMINATE_SYNC:
         rc = ble_ll_iso_big_sync_hci_terminate(cmdbuf, len, rspbuf, rsplen);
         break;
+    case BLE_HCI_OCF_LE_READ_ISO_LINK_QUALITY:
+        rc = ble_ll_iso_big_sync_hci_read_link_quality(cmdbuf, len, rspbuf, rsplen);
+        break;
 #if !MYNEWT_VAL(BLE_LL_ISO_BROADCASTER)
     case BLE_HCI_OCF_LE_TERMINATE_BIG:
         rc = BLE_ERR_CMD_DISALLOWED;

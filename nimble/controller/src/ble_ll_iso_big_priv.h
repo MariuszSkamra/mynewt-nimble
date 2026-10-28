@@ -32,6 +32,15 @@ extern "C" {
 
 struct ble_ll_iso_big;
 
+/* Reception statistics of a BIS, in Synchronized Receiver */
+struct ble_ll_iso_bis_stats {
+    /* Data PDUs with a CRC error, and repetitions of the PDUs received already */
+    uint32_t rx_crc_err;
+    uint32_t rx_dup;
+    /* PDUs never received, in any of their subevents */
+    uint32_t unreceived;
+};
+
 struct ble_ll_iso_bis {
     struct ble_ll_iso_big *big;
     uint8_t num;
@@ -57,6 +66,11 @@ struct ble_ll_iso_bis {
     uint8_t g;
     /* PDUs received in the BIS event, by index, their repetitions not being buffered */
     uint32_t rx_pdus;
+    /* PDUs received, by index, of the event and the next ones (pretransmissions), shifted
+     * once the event is done
+     */
+    uint32_t rx_seen;
+    struct ble_ll_iso_bis_stats stats;
 
     union {
         struct ble_ll_iso_rx rx;
@@ -126,6 +140,8 @@ struct ble_ll_iso_big {
     /* BIS and index of the data PDU being received, NULL if none */
     struct ble_ll_iso_bis *rx_bis;
     uint8_t rx_pdu_idx;
+    /* First reception of the PDU, counted in the statistics */
+    uint8_t rx_first : 1;
 
     struct ble_ll_iso_bis_q bis_q;
     /* BISes in the BIG, the ones synced to and the others */
