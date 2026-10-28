@@ -164,6 +164,13 @@ uint8_t ble_phy_max_data_pdu_pyld(void);
 /* Gets the current access address */
 uint32_t ble_phy_access_addr_get(void);
 
+/*
+ * Sets the maximum payload length of the PDUs received, up to 255 bytes, the default, restored
+ * by ble_phy_disable(). A longer PDU, e.g. with a corrupted length, is received up to this length
+ * only, its CRC check failing.
+ */
+void ble_phy_rx_maxlen_set(uint8_t maxlen);
+
 /* Enable encryption */
 void ble_phy_encrypt_enable(const uint8_t *key);
 /* Set mask for PDU header (see Core 5.3, Vol 6, Part E, 2.2) */

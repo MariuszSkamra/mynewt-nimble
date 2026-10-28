@@ -812,6 +812,11 @@ ble_ll_iso_big_sync_bis_subevent_rx(struct ble_ll_iso_big *big)
         return rc;
     }
 
+    /* A PDU with a corrupted length would be received up to 255 bytes otherwise, the next
+     * subevents being missed.
+     */
+    ble_phy_rx_maxlen_set(big->max_pdu + (big->encrypted ? BLE_LL_DATA_MIC_LEN : 0));
+
     if (big->encrypted) {
         ble_phy_encrypt_enable(big->gsk);
         ble_phy_encrypt_header_mask_set(BLE_LL_PDU_HEADERMASK_BIS);
@@ -841,6 +846,8 @@ ble_ll_iso_big_sync_ctrl_subevent_rx(struct ble_ll_iso_big *big)
     if (rc != 0) {
         return rc;
     }
+
+    ble_phy_rx_maxlen_set(BLE_LL_MAX_PAYLOAD_LEN);
 
     if (big->encrypted) {
         ble_phy_encrypt_enable(big->gsk);

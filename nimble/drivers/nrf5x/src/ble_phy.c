@@ -1837,6 +1837,13 @@ ble_phy_encrypt_enable(const uint8_t *key)
 }
 
 void
+ble_phy_rx_maxlen_set(uint8_t maxlen)
+{
+    NRF_RADIO->PCNF1 = (NRF_RADIO->PCNF1 & ~RADIO_PCNF1_MAXLEN_Msk) |
+                       (maxlen << RADIO_PCNF1_MAXLEN_Pos);
+}
+
+void
 ble_phy_encrypt_header_mask_set(uint8_t mask)
 {
 #ifdef NRF5340_XXAA
@@ -2295,6 +2302,7 @@ ble_phy_disable(void)
 
     g_ble_phy_data.phy_transition_late = 0;
     ble_phy_transition_set(BLE_PHY_TRANSITION_NONE, 0);
+    ble_phy_rx_maxlen_set(NRF_MAXLEN);
 
 #if PHY_USE_FEM
     phy_fem_disable();

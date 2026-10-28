@@ -352,6 +352,11 @@ ble_phy_encrypt_enable(const uint8_t *key)
 }
 
 void
+ble_phy_rx_maxlen_set(uint8_t maxlen)
+{
+}
+
+void
 ble_phy_encrypt_header_mask_set(uint8_t mask)
 {
 }
