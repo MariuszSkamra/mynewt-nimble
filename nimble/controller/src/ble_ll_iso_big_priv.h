@@ -136,7 +136,11 @@ struct ble_ll_iso_big {
 #endif
 
     uint8_t cstf : 1;
+    /* CSSN of the last control PDU received, and of the one announced */
     uint8_t cssn : 4;
+    uint8_t cssn_next : 4;
+    /* The announced control PDU is being received */
+    uint8_t ctrl_rx : 1;
     uint8_t control_active : 3;
     uint16_t control_instant;
 

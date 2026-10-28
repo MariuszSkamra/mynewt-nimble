@@ -594,7 +594,9 @@ ble_ll_iso_big_sync_event_done(struct ble_ll_iso_big *big)
     while (true) {
         big_counter++;
 
-        if (big->control_active && big->control_instant == (uint16_t)big_counter) {
+        /* Also once the instant passed, the control PDU being received late */
+        if (big->control_active &&
+            (int16_t)((uint16_t)big_counter - big->control_instant) >= 0) {
             switch (big->control_active) {
             case BIG_CONTROL_ACTIVE_TERM:
                 big->term_reason = BLE_ERR_REM_USER_CONN_TERM;
@@ -1214,6 +1216,11 @@ ble_ll_iso_big_sync_rx_isr_end(uint8_t *rxbuf, struct ble_mbuf_hdr *rxhdr)
         }
     }
 
+    /* The control PDU dropped without buffer is received again in the next event */
+    if (rxpdu && big->ctrl_rx) {
+        big->cssn = big->cssn_next;
+    }
+
     if (rxpdu) {
         ble_phy_rxpdu_copy(rxbuf, rxpdu);
 
@@ -1257,6 +1264,7 @@ ble_ll_iso_big_sync_rx_isr_early_end(uint8_t *rxbuf, struct ble_mbuf_hdr *rxhdr)
     crc_ok = BLE_MBUF_HDR_CRC_OK(rxhdr);
     mic_ok = !BLE_MBUF_HDR_MIC_FAILURE(rxhdr);
     big->rx_bis = NULL;
+    big->ctrl_rx = 0;
 
     /* A wrong Broadcast_Code: the synchronization fails, reported with the MIC failure, the
      * event ending once the PDU is received
@@ -1274,9 +1282,17 @@ ble_ll_iso_big_sync_rx_isr_early_end(uint8_t *rxbuf, struct ble_mbuf_hdr *rxhdr)
         /* Control Subevent Transmission Flag */
         cstf = BLE_LL_BIS_PDU_HDR_CSTF(hdr_byte);
 
+        /* The control subevent is received in each event announcing it, until its PDU is
+         * received, the PDU being sent in several events in case one is missed.
+         */
         if (cstf > 0 && cssn != big->cssn) {
             big->cstf = cstf;
-            big->cssn = cssn;
+            big->cssn_next = cssn;
+        }
+
+        /* Received once buffered, see ble_ll_iso_big_sync_rx_isr_end() */
+        if (!data_subevent && big->cstf && mic_ok && BLE_LL_BIS_LLID_IS_CTRL(hdr_byte)) {
+            big->ctrl_rx = 1;
         }
 
         if (BLE_LL_BIS_LLID_IS_DATA(hdr_byte) && mic_ok) {
