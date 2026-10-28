@@ -74,7 +74,7 @@ struct ble_encryption_block
  */
 struct ble_mbuf_hdr_rxinfo
 {
-    uint16_t flags;
+    uint32_t flags;
     uint16_t handle;
     uint8_t channel;
     int8_t  rssi;
