@@ -441,7 +441,12 @@ ble_hci_sock_rx_msg(void)
     len = read(bhss->sock, bhss->rx_data + bhss->rx_off,
                sizeof(bhss->rx_data) - bhss->rx_off);
     if (len < 0) {
-        return -2;
+        if (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR) {
+            return -2;
+        }
+        /* Controller is gone, e.g. USB device removed */
+        dprintf(1, "read() failed : %d\n", errno);
+        exit(1);
     }
     if (len == 0) {
         return -1;
