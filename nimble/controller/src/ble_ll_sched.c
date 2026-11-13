@@ -910,8 +910,8 @@ ble_ll_sched_iso_big(struct ble_ll_sched_item *sch, int first, int fixed)
 
 #if MYNEWT_VAL(BLE_LL_ISO_BROADCAST_SYNC)
 static int
-preempt_any_except_starving_conn(struct ble_ll_sched_item *sch,
-                                 struct ble_ll_sched_item *item)
+preempt_any_except_big_and_conn(struct ble_ll_sched_item *sch,
+                                struct ble_ll_sched_item *item)
 {
 #if MYNEWT_VAL(BLE_LL_ISO_BROADCASTER)
     if (item->sched_type == BLE_LL_SCHED_TYPE_BIG) {
@@ -921,22 +921,83 @@ preempt_any_except_starving_conn(struct ble_ll_sched_item *sch,
 
 #if MYNEWT_VAL(BLE_LL_ROLE_PERIPHERAL) || MYNEWT_VAL(BLE_LL_ROLE_CENTRAL)
     if (item->sched_type == BLE_LL_SCHED_TYPE_CONN) {
-        return !ble_ll_conn_is_starving(item->cb_arg);
+        return 0;
     }
 #endif
 
     return 1;
 }
 
+#if MYNEWT_VAL(BLE_LL_ROLE_PERIPHERAL) || MYNEWT_VAL(BLE_LL_ROLE_CENTRAL)
+static uint32_t
+conn_min_end_time(struct ble_ll_sched_item *sch)
+{
+    uint32_t usecs;
+#if MYNEWT_VAL(BLE_LL_ROLE_PERIPHERAL)
+    struct ble_ll_conn_sm *connsm = sch->cb_arg;
+#endif
+
+    usecs = BLE_LL_SCHED_USECS_PER_SLOT;
+
+#if MYNEWT_VAL(BLE_LL_ROLE_PERIPHERAL)
+    if (connsm->conn_role == BLE_LL_CONN_ROLE_PERIPHERAL) {
+        usecs += connsm->periph_cur_tx_win_usecs +
+                 2 * connsm->periph_cur_window_widening;
+    }
+#endif
+
+    return sch->start_time + g_ble_ll_sched_offset_ticks +
+           ble_ll_tmr_u2t_up(usecs);
+}
+
+static int
+big_sync_share_with_conns(struct ble_ll_sched_item *sch, uint32_t min_end_time)
+{
+    struct ble_ll_sched_item *entry;
+
+    TAILQ_FOREACH(entry, &g_ble_ll_sched_q, link) {
+        if (LL_TMR_LEQ(sch->end_time, entry->start_time)) {
+            break;
+        }
+
+        if ((entry->sched_type != BLE_LL_SCHED_TYPE_CONN) ||
+            !ble_ll_sched_check_overlap(sch, entry)) {
+            continue;
+        }
+
+        if (LL_TMR_GEQ(entry->start_time, min_end_time)) {
+            sch->end_time = entry->start_time;
+            break;
+        }
+
+        if (LL_TMR_GEQ(sch->start_time, conn_min_end_time(entry))) {
+            entry->end_time = sch->start_time;
+            continue;
+        }
+
+        return -1;
+    }
+
+    return 0;
+}
+#endif
+
 int
-ble_ll_sched_iso_big_sync(struct ble_ll_sched_item *sch)
+ble_ll_sched_iso_big_sync(struct ble_ll_sched_item *sch, uint32_t min_end_time)
 {
     os_sr_t sr;
     int rc;
 
     OS_ENTER_CRITICAL(sr);
 
-    rc = ble_ll_sched_insert(sch, 0, preempt_any_except_starving_conn);
+#if MYNEWT_VAL(BLE_LL_ROLE_PERIPHERAL) || MYNEWT_VAL(BLE_LL_ROLE_CENTRAL)
+    rc = big_sync_share_with_conns(sch, min_end_time);
+    if (rc == 0) {
+        rc = ble_ll_sched_insert(sch, 0, preempt_any_except_big_and_conn);
+    }
+#else
+    rc = ble_ll_sched_insert(sch, 0, preempt_any_except_big_and_conn);
+#endif
 
     OS_EXIT_CRITICAL(sr);
 

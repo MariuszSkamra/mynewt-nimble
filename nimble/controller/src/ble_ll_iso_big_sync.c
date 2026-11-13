@@ -454,6 +454,25 @@ big_sync_sched_set(struct ble_ll_iso_big *big, uint32_t offset_us)
     return 0;
 }
 
+static uint32_t
+big_sync_min_end_time(const struct ble_ll_iso_big *big)
+{
+    const struct ble_ll_iso_bis *bis;
+    uint32_t ww_ticks;
+    uint32_t us;
+
+    us = 0;
+    STAILQ_FOREACH(bis, &big->bis_q, bis_q_next) {
+        us = max(us, subevent_offset_us(big, bis, 0));
+    }
+    us += big->mpt;
+
+    ww_ticks = big->event_anchor_ticks -
+               (big->sch.start_time + g_ble_ll_sched_offset_ticks);
+
+    return big->event_anchor_ticks + ww_ticks + ble_ll_tmr_u2t_up(us) + 1;
+}
+
 static uint16_t
 bis_sync_conn_handle_get(void)
 {
@@ -687,7 +706,8 @@ biginfo_func(struct ble_ll_sync_sm *syncsm, uint8_t sca, uint32_t sync_ticks,
         if (rc > 0 || LL_TMR_LEQ(big->sch.start_time, ble_ll_tmr_get())) {
             rc = -1;
         } else {
-            rc = ble_ll_sched_iso_big_sync(&big->sch);
+            rc = ble_ll_sched_iso_big_sync(&big->sch,
+                                           big_sync_min_end_time(big));
         }
         if (rc >= 0) {
             break;
@@ -784,7 +804,8 @@ ble_ll_iso_big_sync_event_done(struct ble_ll_iso_big *big)
         if (rc > 0 || LL_TMR_LEQ(big->sch.start_time, ble_ll_tmr_get())) {
             rc = -1;
         } else {
-            rc = ble_ll_sched_iso_big_sync(&big->sch);
+            rc = ble_ll_sched_iso_big_sync(&big->sch,
+                                           big_sync_min_end_time(big));
         }
         if (rc >= 0) {
             break;

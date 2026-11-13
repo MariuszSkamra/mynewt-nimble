@@ -224,7 +224,7 @@ int ble_ll_sched_iso_big(struct ble_ll_sched_item *sch, int first, int fixed);
 #endif /* BLE_LL_ISO_BROADCASTER */
 
 #if MYNEWT_VAL(BLE_LL_ISO_BROADCAST_SYNC)
-int ble_ll_sched_iso_big_sync(struct ble_ll_sched_item *sch);
+int ble_ll_sched_iso_big_sync(struct ble_ll_sched_item *sch, uint32_t min_end_time);
 #endif /* BLE_LL_ISO_BROADCAST_SYNC */
 
 #ifdef __cplusplus
